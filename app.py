@@ -29,6 +29,53 @@ llm_service = LLMService(
 user_models = {}  # phone_number -> "haiku" or "sonnet"
 
 
+def split_message(text: str, max_length: int) -> list:
+    """
+    Split long text into chunks at sentence boundaries
+    Twilio WhatsApp has a 1600 character limit per message
+    """
+    import re
+
+    # Leave room for part indicator "[Part X/Y]"
+    chunk_size = max_length - 20
+
+    chunks = []
+    current_chunk = ""
+
+    # Split by sentences (periods, question marks, exclamation points)
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+
+    for sentence in sentences:
+        # If single sentence is too long, split by commas or spaces
+        if len(sentence) > chunk_size:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = ""
+
+            # Split long sentence by commas
+            parts = sentence.split(', ')
+            for part in parts:
+                if len(current_chunk) + len(part) + 2 > chunk_size:
+                    if current_chunk:
+                        chunks.append(current_chunk.strip())
+                    current_chunk = part + ', '
+                else:
+                    current_chunk += part + ', '
+        elif len(current_chunk) + len(sentence) + 1 > chunk_size:
+            # Adding this sentence would exceed limit
+            chunks.append(current_chunk.strip())
+            current_chunk = sentence + " "
+        else:
+            # Add sentence to current chunk
+            current_chunk += sentence + " "
+
+    # Add final chunk
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+
+    return chunks
+
+
 @app.route('/')
 def home():
     """Health check endpoint"""
@@ -132,8 +179,24 @@ def webhook():
 
             print(f"[Webhook] Saved to Firebase. Total tokens: {total_tokens}")
 
-            # Send response back to WhatsApp
-            resp.message(response_text)
+            # Send response back to WhatsApp (Twilio has 1600 char limit)
+            # Split long messages into chunks
+            max_msg_length = 1600
+            if len(response_text) <= max_msg_length:
+                resp.message(response_text)
+                print(f"[Webhook] Sent single message ({len(response_text)} chars)")
+            else:
+                # Split into chunks at sentence boundaries
+                chunks = split_message(response_text, max_msg_length)
+                print(f"[Webhook] Splitting into {len(chunks)} messages")
+
+                for i, chunk in enumerate(chunks):
+                    if i == 0:
+                        # First chunk includes part indicator
+                        resp.message(f"{chunk}\n\n[Part {i+1}/{len(chunks)}]")
+                    else:
+                        resp.message(f"[Part {i+1}/{len(chunks)}]\n\n{chunk}")
+                    print(f"[Webhook] Sent part {i+1}/{len(chunks)} ({len(chunk)} chars)")
 
             # If model switched to Sonnet, add a note (optional)
             if processed.triggered_sonnet and not processed.was_modified:
