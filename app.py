@@ -89,15 +89,59 @@ def home():
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """
-    Twilio WhatsApp webhook handler
-    Receives incoming messages and responds with LLM-generated answers
+    Twilio WhatsApp webhook handler - FAST QUEUE VERSION
+    Immediately queues message to Firebase and returns, preventing timeout on cold starts
+    """
+    try:
+        # Get incoming message details
+        incoming_msg = request.values.get('Body', '').strip()
+        from_number = request.values.get('From', '')
+        message_sid = request.values.get('MessageSid', '')  # Unique message ID from Twilio
+
+        print(f"\n[Webhook] Received message {message_sid} from {from_number}: {incoming_msg}")
+
+        # Create Twilio response
+        resp = MessagingResponse()
+
+        # Handle empty messages
+        if not incoming_msg:
+            resp.message("Please send a message to chat with DriveMind.")
+            return str(resp)
+
+        # FAST PATH: Queue message and return immediately (prevents timeout)
+        queued = firebase_service.enqueue_message(from_number, incoming_msg, message_sid)
+
+        if queued:
+            # Message queued successfully - acknowledge receipt
+            # Empty response means no immediate reply (processing async)
+            print(f"[Webhook] Message queued successfully, returning 200 OK")
+            return str(resp)  # Return empty TwiML - we'll send response later
+        else:
+            # Fallback: If queueing fails, respond with error
+            resp.message("Sorry, I'm having trouble processing messages right now. Please try again in a moment.")
+            return str(resp)
+
+    except Exception as e:
+        print(f"[Webhook] ERROR: {str(e)}")
+        print(traceback.format_exc())
+
+        # Always return 200 OK to Twilio to prevent retries
+        resp = MessagingResponse()
+        return str(resp)
+
+
+@app.route('/webhook-sync', methods=['POST'])
+def webhook_sync():
+    """
+    Original synchronous webhook handler (kept as fallback)
+    Process message immediately and respond
     """
     try:
         # Get incoming message details
         incoming_msg = request.values.get('Body', '').strip()
         from_number = request.values.get('From', '')
 
-        print(f"\n[Webhook] Received message from {from_number}: {incoming_msg}")
+        print(f"\n[Webhook-Sync] Received message from {from_number}: {incoming_msg}")
 
         # Create Twilio response
         resp = MessagingResponse()
@@ -113,7 +157,7 @@ def webhook():
         # Command: Start new conversation
         if Config.ENABLE_NEW_CONVERSATION_COMMAND and lower_msg in ['new conversation', 'new', 'reset', 'start over']:
             conversation = firebase_service.start_new_conversation(from_number)
-            print(f"[Webhook] Started new conversation: {conversation.id}")
+            print(f"[Webhook-Sync] Started new conversation: {conversation.id}")
             resp.message("Started a new conversation. What would you like to talk about?")
             return str(resp)
 
@@ -280,6 +324,48 @@ def health():
     except Exception as e:
         return {
             "status": "unhealthy",
+            "error": str(e)
+        }, 500
+
+
+@app.route('/process-queue', methods=['POST', 'GET'])
+def process_queue_endpoint():
+    """
+    Manually trigger queue processing
+    This endpoint can be called by Render cron job or manually
+    """
+    try:
+        from process_queue import QueueProcessor
+
+        processor = QueueProcessor()
+        pending = firebase_service.get_pending_messages(limit=10)
+
+        if not pending:
+            return {
+                "status": "success",
+                "processed": 0,
+                "message": "No pending messages"
+            }
+
+        # Process all pending messages
+        processed_count = 0
+        for queue_item in pending:
+            try:
+                processor.process_message(queue_item)
+                processed_count += 1
+            except Exception as e:
+                print(f"[ProcessQueue] Error processing {queue_item['id']}: {e}")
+
+        return {
+            "status": "success",
+            "processed": processed_count,
+            "total_pending": len(pending)
+        }
+
+    except Exception as e:
+        print(f"[ProcessQueue] Error: {e}")
+        return {
+            "status": "error",
             "error": str(e)
         }, 500
 
