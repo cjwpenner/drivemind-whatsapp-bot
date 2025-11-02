@@ -101,51 +101,103 @@ def webhook():
         )
         llm_messages.append(user_message)
 
-        # Call LLM
-        print(f"[Webhook] Calling {Config.LLM_PROVIDER} with {processed.model} model...")
-        response_text, input_tokens, output_tokens = llm_service.send_message(
-            messages=llm_messages,
-            model=processed.model
-        )
-
-        print(f"[Webhook] Got response ({len(response_text)} chars)")
-
-        # Create assistant message
-        assistant_message = Message(
-            content=response_text,
-            role="assistant",
-            timestamp=datetime.now(),
-            model=processed.model,
-            tokens=input_tokens + output_tokens
-        )
-
-        # Save messages to Firebase
+        # Save user message to Firebase immediately
         firebase_service.add_message(conversation.id, user_message)
-        firebase_service.add_message(conversation.id, assistant_message)
 
-        # Update token count
-        total_tokens = conversation.token_count + input_tokens + output_tokens
-        firebase_service.update_token_count(conversation.id, total_tokens)
+        # Call LLM with error handling
+        try:
+            print(f"[Webhook] Calling {Config.LLM_PROVIDER} with {processed.model} model...")
+            response_text, input_tokens, output_tokens = llm_service.send_message(
+                messages=llm_messages,
+                model=processed.model
+            )
 
-        print(f"[Webhook] Saved to Firebase. Total tokens: {total_tokens}")
+            print(f"[Webhook] Got response ({len(response_text)} chars)")
 
-        # Send response back to WhatsApp
-        resp.message(response_text)
+            # Create assistant message
+            assistant_message = Message(
+                content=response_text,
+                role="assistant",
+                timestamp=datetime.now(),
+                model=processed.model,
+                tokens=input_tokens + output_tokens
+            )
 
-        # If model switched to Sonnet, add a note (optional)
-        if processed.triggered_sonnet and not processed.was_modified:
-            # User explicitly asked for deep thinking
-            print(f"[Webhook] Used Sonnet model for deeper analysis")
+            # Save assistant message to Firebase
+            firebase_service.add_message(conversation.id, assistant_message)
 
-        return str(resp)
+            # Update token count
+            total_tokens = conversation.token_count + input_tokens + output_tokens
+            firebase_service.update_token_count(conversation.id, total_tokens)
+
+            print(f"[Webhook] Saved to Firebase. Total tokens: {total_tokens}")
+
+            # Send response back to WhatsApp
+            resp.message(response_text)
+
+            # If model switched to Sonnet, add a note (optional)
+            if processed.triggered_sonnet and not processed.was_modified:
+                # User explicitly asked for deep thinking
+                print(f"[Webhook] Used Sonnet model for deeper analysis")
+
+            return str(resp)
+
+        except Exception as llm_error:
+            # Log LLM error details
+            error_type = type(llm_error).__name__
+            error_msg = str(llm_error)
+
+            print(f"[Webhook] LLM ERROR ({error_type}): {error_msg}")
+            print(traceback.format_exc())
+
+            # Save error to Firebase as an assistant message
+            error_message = Message(
+                content=f"[ERROR: {error_type}] {error_msg}",
+                role="assistant",
+                timestamp=datetime.now(),
+                model=processed.model,
+                tokens=0
+            )
+            firebase_service.add_message(conversation.id, error_message)
+
+            # Send user-friendly error message
+            user_error_msg = "Sorry, I encountered an error communicating with the AI service. "
+
+            if "timeout" in error_msg.lower():
+                user_error_msg += "The request timed out. Please try again with a shorter message."
+            elif "network" in error_msg.lower() or "connection" in error_msg.lower():
+                user_error_msg += "There was a network connectivity issue. Please try again."
+            elif "rate" in error_msg.lower() or "429" in error_msg:
+                user_error_msg += "The service is temporarily busy. Please wait a moment and try again."
+            elif "401" in error_msg or "authentication" in error_msg.lower():
+                user_error_msg += "API authentication failed. Please contact support."
+            else:
+                user_error_msg += "Please try again."
+
+            resp.message(user_error_msg)
+            return str(resp)
 
     except Exception as e:
-        print(f"[Webhook] ERROR: {str(e)}")
+        print(f"[Webhook] GENERAL ERROR: {str(e)}")
         print(traceback.format_exc())
+
+        # Try to save error to Firebase if we have a conversation
+        try:
+            if 'conversation' in locals():
+                error_message = Message(
+                    content=f"[SYSTEM ERROR: {type(e).__name__}] {str(e)}",
+                    role="assistant",
+                    timestamp=datetime.now(),
+                    model="system",
+                    tokens=0
+                )
+                firebase_service.add_message(conversation.id, error_message)
+        except:
+            pass  # If Firebase save fails, just log to console
 
         # Send error message to user
         resp = MessagingResponse()
-        resp.message("Sorry, I encountered an error processing your message. Please try again.")
+        resp.message("Sorry, I encountered an unexpected error. Please try again.")
         return str(resp)
 
 
