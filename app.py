@@ -160,19 +160,17 @@ def webhook():
             )
             firebase_service.add_message(conversation.id, error_message)
 
-            # Send user-friendly error message
-            user_error_msg = "Sorry, I encountered an error communicating with the AI service. "
-
+            # Send user-friendly error message with technical details for debugging
             if "timeout" in error_msg.lower():
-                user_error_msg += "The request timed out. Please try again with a shorter message."
+                user_error_msg = f"⏱️ Request timed out after 180 seconds. The AI is taking too long to respond. This was logged to the conversation history for debugging.\n\nError: {error_type}"
             elif "network" in error_msg.lower() or "connection" in error_msg.lower():
-                user_error_msg += "There was a network connectivity issue. Please try again."
+                user_error_msg = f"🌐 Network connectivity issue. Please check your connection and try again.\n\nError: {error_type}"
             elif "rate" in error_msg.lower() or "429" in error_msg:
-                user_error_msg += "The service is temporarily busy. Please wait a moment and try again."
+                user_error_msg = f"⚠️ The AI service is temporarily busy (rate limit). Please wait a moment and try again.\n\nError: {error_type}"
             elif "401" in error_msg or "authentication" in error_msg.lower():
-                user_error_msg += "API authentication failed. Please contact support."
+                user_error_msg = f"🔑 API authentication failed. Please contact support.\n\nError: {error_type}"
             else:
-                user_error_msg += "Please try again."
+                user_error_msg = f"❌ Error communicating with AI service. Please try again.\n\nError: {error_type}: {error_msg[:100]}"
 
             resp.message(user_error_msg)
             return str(resp)
