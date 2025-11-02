@@ -70,7 +70,7 @@ class FirebaseService:
             return None
 
     def create_conversation(self, user_id: str, title: str) -> Conversation:
-        """Create a new conversation"""
+        """Create a new conversation with timestamp-based ID"""
         try:
             # Mark all existing conversations as inactive
             existing_docs = self.db.collection('conversations') \
@@ -81,19 +81,25 @@ class FirebaseService:
             for doc in existing_docs:
                 doc.reference.update({'isActive': False})
 
-            # Create new conversation
+            # Create new conversation with timestamp-based ID
+            now = datetime.now()
+            # Format: YYYY-MM-DD_HH-MM-SS
+            timestamp_id = now.strftime('%Y-%m-%d_%H-%M-%S')
+
             conversation = Conversation(
+                id=timestamp_id,
                 user_id=user_id,
                 title=title,
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
+                created_at=now,
+                updated_at=now,
                 is_active=True,
                 token_count=0,
                 messages=[]
             )
 
-            doc_ref = self.db.collection('conversations').add(conversation.to_dict())
-            conversation.id = doc_ref[1].id
+            # Use timestamp as document ID
+            doc_ref = self.db.collection('conversations').document(timestamp_id)
+            doc_ref.set(conversation.to_dict())
 
             return conversation
         except Exception as e:
