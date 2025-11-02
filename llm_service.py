@@ -40,7 +40,8 @@ Be helpful, accurate, and concise. Remember: your audience is listening, not rea
 
         if provider == "claude":
             self.claude_client = anthropic.Anthropic(
-                api_key=claude_api_key or os.getenv('CLAUDE_API_KEY')
+                api_key=claude_api_key or os.getenv('CLAUDE_API_KEY'),
+                timeout=180.0  # 3 minutes for Sonnet deep dives
             )
         else:
             openai.api_key = openai_api_key or os.getenv('OPENAI_API_KEY')
